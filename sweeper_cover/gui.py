@@ -467,6 +467,10 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         layout = QHBoxLayout(central)
 
+        # ─── 先创建画布 ───
+        self.canvas = MapCanvas()
+        self.canvas.status_msg.connect(self._update_status)
+
         # ─── 左侧控制面板 ───
         left_panel = QWidget()
         left_panel.setFixedWidth(220)
@@ -561,10 +565,6 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.btn_clear)
         left_layout.addWidget(self.btn_fit)
         left_layout.addStretch()
-
-        # ─── 画布 ───
-        self.canvas = MapCanvas()
-        self.canvas.status_msg.connect(self._update_status)
 
         # ─── 右侧面板 ───
         right_panel = QWidget()

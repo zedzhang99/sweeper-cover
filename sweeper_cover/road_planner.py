@@ -54,75 +54,79 @@ def plan_routes(road_paths, road_width, vehicle_width, num_vehicles, max_distanc
     # 每台车的目标距离
     target_per_vehicle = min(max_m, total_length / num_vehicles)
 
-    # 贪心分配：按路径顺序依次分配给各车
-    # 改进：支持将长路径分段分配给不同车辆
-    vehicle_routes = [[] for _ in range(num_vehicles)]
-    vehicle_dists = [0.0] * num_vehicles
-    max_per_veh = target_per_vehicle
+    # 贪心分配：先将长路径预分割为子段，再分配给各车
+    # 这样每台车拿到的 path_indices 指向不同的子段
+    sub_paths = []  # [(original_path_index, start_point_index, end_point_index, point_count)]
+    sub_path_lookup = []  # 映射: sub_index -> (orig_path_index, points_subset)
 
     for pi in range(len(road_paths)):
         path_len = path_info[pi]["length"]
         path_pts = path_info[pi]["points"]
+        max_per_veh = target_per_vehicle
 
-        # 找当前总距离最小的车辆
-        v = min(range(num_vehicles), key=lambda i: vehicle_dists[i])
-
-        if vehicle_dists[v] + path_len <= max_per_veh or path_len <= max_per_veh * 0.3:
-            # 整段分配给这台车
-            vehicle_routes[v].append(pi)
-            vehicle_dists[v] += path_len
+        if path_len <= max_per_veh or path_len <= max_per_veh * 0.3:
+            # 短路径，整段加入
+            idx = len(sub_paths)
+            sub_paths.append(path_len)
+            sub_path_lookup.append({"path_index": pi, "start_idx": 0, "end_idx": len(path_pts) - 1})
         else:
-            # 长路径需要分段：分配给多台车
-            # 计算每台车还能装多少
-            remaining_in_path = path_len
-            seg_start = 0
+            # 长路径按目标距离分段
+            n_segments = max(2, int(math.ceil(path_len / max_per_veh)))
+            seg_len = path_len / n_segments
+            for s in range(n_segments):
+                start_i = int(s * (len(path_pts) - 1) / n_segments)
+                end_i = int((s + 1) * (len(path_pts) - 1) / n_segments)
+                if end_i <= start_i:
+                    end_i = start_i + 1
+                # 计算这个子段的长度
+                sub_len = sum(
+                    math.hypot(path_pts[k+1][0] - path_pts[k][0], path_pts[k+1][1] - path_pts[k][1])
+                    for k in range(start_i, end_i)
+                )
+                idx = len(sub_paths)
+                sub_paths.append(sub_len)
+                sub_path_lookup.append({"path_index": pi, "start_idx": start_i, "end_idx": end_i})
 
-            while remaining_in_path > 0.01:
-                v = min(range(num_vehicles), key=lambda i: vehicle_dists[i])
-                avail = max(0, max_per_veh - vehicle_dists[v])
+    # 贪心分配子段给各车辆
+    vehicle_routes = [[] for _ in range(num_vehicles)]  # 每个元素: [(sub_idx, start_idx, end_idx), ...]
+    vehicle_dists = [0.0] * num_vehicles
 
-                if remaining_in_path <= avail or avail <= 1:
-                    # 剩余部分全给这台车
-                    seg_end = len(path_pts) - 1
-                    vehicle_routes[v].append(pi)
-                    vehicle_dists[v] += remaining_in_path
-                    remaining_in_path = 0
-                else:
-                    # 取一部分给这台车，剩下的继续
-                    ratio = avail / path_len
-                    seg_end = int(seg_start + ratio * (len(path_pts) - 1))
-                    seg_end = max(seg_start + 1, min(seg_end, len(path_pts) - 1))
-                    vehicle_routes[v].append(pi)
-                    vehicle_dists[v] += avail
-                    remaining_in_path -= avail
-                    seg_start = seg_end
+    for si in range(len(sub_paths)):
+        v = min(range(num_vehicles), key=lambda i: vehicle_dists[i])
+        vehicle_routes[v].append(si)
+        vehicle_dists[v] += sub_paths[si]
 
     # 构建 routes
     colors = ["#FF4444", "#4488FF", "#44CC44", "#FF8800", "#AA44FF"]
     routes = []
     for v in range(num_vehicles):
+        # 收集该车所有子段的原始路径点（带范围）
+        sub_segments = []
+        for si in vehicle_routes[v]:
+            lookup = sub_path_lookup[si]
+            orig_path = road_paths[lookup["path_index"]]
+            sub_segments.append(orig_path[lookup["start_idx"]:lookup["end_idx"] + 1])
+
         routes.append({
             "vehicle_id": v + 1,
-            "path_indices": vehicle_routes[v],
             "distance": vehicle_dists[v],
-            "waypoints": [],
+            "waypoints": _generate_vehicle_waypoints(sub_segments, road_width, vehicle_width, passes_needed),
             "color": colors[v % len(colors)],
             "passes": passes_needed,
         })
-        routes[v]["waypoints"] = _generate_vehicle_waypoints(
-            road_paths, routes[v]["path_indices"],
-            road_width, vehicle_width, passes_needed,
-        )
 
     total_route_dist = sum(r["distance"] for r in routes)
     return routes, total_length
 
 
-def _generate_vehicle_waypoints(all_paths, path_indices, road_width, vehicle_width, passes):
-    """生成某台车的完整路径点（含多趟偏移）"""
+def _generate_vehicle_waypoints(sub_segments, road_width, vehicle_width, passes):
+    """生成某台车的完整路径点（含多趟偏移）
+    
+    Args:
+        sub_segments: 该车负责的路径段列表，每段是 [(x,y),...]
+    """
     waypoints = []
-    for pi in path_indices:
-        path = list(all_paths[pi])
+    for path in sub_segments:
         if len(path) < 2:
             continue
 
@@ -276,7 +280,7 @@ class RoadCanvas(QWidget):
 
         info = f"道路总长: {total_len:.1f}m | "
         for r in routes:
-            info += f"车{r['vehicle_id']}: {r['distance']:.1f}m ({len(r['path_indices'])}段)  "
+            info += f"车{r['vehicle_id']}: {r['distance']:.1f}m  "
         self.status_msg.emit(info)
         self.update()
 
@@ -295,7 +299,6 @@ class RoadCanvas(QWidget):
                 f.write(f"--- 车{r['vehicle_id']} ---\n")
                 f.write(f"路线长度: {r['distance']:.1f}m\n")
                 f.write(f"通行趟数: {r['passes']}\n")
-                f.write(f"路段数: {len(r['path_indices'])}\n")
                 f.write("x(m),y(m)\n")
                 for wx, wy in r["waypoints"]:
                     f.write(f"{wx:.3f},{wy:.3f}\n")

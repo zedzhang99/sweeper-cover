@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QLabel, QDoubleSpinBox, QSpinBox, QComboBox, QCheckBox,
     QFileDialog, QMessageBox, QInputDialog, QListWidget, QListWidgetItem,
     QSplitter, QFrame, QGroupBox, QFormLayout, QStatusBar, QSlider,
-    QScrollArea, QToolBar, QAction, QButtonGroup, QRadioButton,
+    QScrollArea, QToolBar, QAction, QButtonGroup, QRadioButton, QMenu,
 )
 from PyQt5.QtCore import Qt, QPointF, QRectF, pyqtSignal, QLineF, QSize
 from PyQt5.QtGui import (
@@ -179,7 +179,7 @@ class MapCanvas(QWidget):
         old_mode = self.mode
         self.mode = mode
         names = {
-            MODE_NONE: "就绪", MODE_DRAW_AREA: "画作业区域(左键加点,右键完成)",
+            MODE_NONE: "就绪", MODE_DRAW_AREA: "画区域: 左键加点 右键菜单|完成|插入|弹出|清空",
             MODE_DRAW_OBSTACLE: "画障碍物(左键加点,右键完成,回车确认)",
             MODE_SET_SCALE: "设定比例尺(点击两点,输入实际距离)",
             MODE_EDIT_VERTEX: "编辑模式(拖拽顶点,点击选中障碍物按Delete删除)",
@@ -308,6 +308,85 @@ class MapCanvas(QWidget):
         self.update()
         self.status_msg.emit("已清空")
 
+    # ═══ 右键菜单操作 ═══
+    def _finish_area(self):
+        """完成当前区域，保存到 areas 列表"""
+        if len(self.area_points) < 3:
+            self.status_msg.emit("至少需要3个顶点")
+            return
+        self._save_history()
+        self.areas.append(list(self.area_points))
+        self.current_area_idx = len(self.areas) - 1
+        self.status_msg.emit(f"区域完成: {len(self.area_points)} 顶点")
+        if self.scale_set:
+            self.generate_path()
+        self.set_mode(MODE_NONE)
+        self.update()
+
+    def _insert_vertex_at(self):
+        """在鼠标位置插入一个顶点"""
+        if not self.mouse_scene_pos or not self.area_points:
+            return
+        mx, my = self.mouse_scene_pos
+        self._save_history()
+        # 找最近的边插入
+        if len(self.area_points) >= 2:
+            best_i = 0
+            best_d = float('inf')
+            for i in range(len(self.area_points)):
+                x1, y1 = self.area_points[i]
+                x2, y2 = self.area_points[(i + 1) % len(self.area_points)]
+                # 点到线段的距离
+                dx, dy = x2 - x1, y2 - y1
+                length = math.hypot(dx, dy)
+                if length < 0.01: continue
+                t = max(0, min(1, ((mx - x1) * dx + (my - y1) * dy) / (length * length)))
+                px, py = x1 + t * dx, y1 + t * dy
+                d = math.hypot(mx - px, my - py)
+                if d < best_d:
+                    best_d = d
+                    best_i = (i + 1) % len(self.area_points)
+            self.area_points.insert(best_i, (mx, my))
+        else:
+            self.area_points.append((mx, my))
+        # 实时更新区域和路径
+        if self.areas:
+            self.areas[-1] = list(self.area_points)
+        if self.scale_set and len(self.area_points) >= 3:
+            self.generate_path()
+        self.update()
+        self.status_msg.emit(f"插入顶点 #{best_i + 1 if len(self.area_points) > 1 else len(self.area_points)}")
+
+    def _pop_vertex(self):
+        """弹出最后一个顶点"""
+        if not self.area_points:
+            return
+        self._save_history()
+        self.area_points.pop()
+        if self.areas:
+            if self.area_points:
+                self.areas[-1] = list(self.area_points)
+            else:
+                self.areas.pop()
+        if self.scale_set and len(self.area_points) >= 3:
+            self.generate_path()
+        elif self.scale_set:
+            self.path_waypoints = []
+            self.path_changed.emit([])
+        self.update()
+        self.status_msg.emit(f"弹出顶点, 剩余 {len(self.area_points)}")
+
+    def _clear_vertices(self):
+        """清空所有顶点"""
+        self._save_history()
+        self.area_points.clear()
+        if self.areas:
+            self.areas.pop()
+        self.path_waypoints = []
+        self.path_changed.emit([])
+        self.update()
+        self.status_msg.emit("已清空所有顶点")
+
     def generate_path(self, smooth=None):
         if len(self.area_points) < 3 and not self.areas:
             # 如果 areas 不为空但 area_points 为空，取最后一个区域
@@ -390,27 +469,57 @@ class MapCanvas(QWidget):
         if self.map_pixmap and not self.map_pixmap.isNull():
             painter.drawPixmap(0, 0, self.map_pixmap)
 
-        # ─── 所有作业区域 ───
+        # ─── 所有已完成的作业区域 ───
         for ai, area in enumerate(self.areas):
             if len(area) < 2: continue
             poly = QPolygonF([QPointF(p[0], p[1]) for p in area])
-            # 当前编辑的区域高亮
-            if ai == self.current_area_idx and self.areas:
-                painter.setPen(QPen(QColor(0, 180, 255), 3 / self.zoom))
-                painter.setBrush(QBrush(QColor(0, 120, 255, 25)))
-            else:
-                painter.setPen(QPen(QColor(100, 100, 255), 2 / self.zoom))
-                painter.setBrush(QBrush(QColor(100, 100, 255, 15)))
+            painter.setPen(QPen(QColor(100, 100, 255), 2 / self.zoom))
+            painter.setBrush(QBrush(QColor(100, 100, 255, 15)))
             painter.drawPolygon(poly)
+            # 顶点
+            for vx, vy in area:
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QBrush(QColor(100, 100, 255, 150)))
+                painter.drawEllipse(QPointF(vx, vy), 3 / self.zoom, 3 / self.zoom)
 
-        # 当前区域顶点
-        if self.mode in (MODE_DRAW_AREA, MODE_EDIT_VERTEX, MODE_NONE):
+        # ─── 当前正在编辑的区域（实时显示） ───
+        if self.area_points and len(self.area_points) >= 1:
+            pts = list(self.area_points)
+            # 如果是画区域模式且有悬停位置，显示预览连接线
+            if self.mode == MODE_DRAW_AREA and self.hover_pos:
+                preview = pts + [self.hover_pos]
+            else:
+                preview = pts
+            if len(preview) >= 2:
+                poly = QPolygonF([QPointF(p[0], p[1]) for p in preview])
+                # 如果>=3个点，填充区域
+                if len(preview) >= 3:
+                    painter.setPen(QPen(QColor(0, 220, 255), 2.5 / self.zoom))
+                    painter.setBrush(QBrush(QColor(0, 180, 255, 30)))
+                else:
+                    painter.setPen(QPen(QColor(0, 220, 255), 2.5 / self.zoom, Qt.DashLine))
+                    painter.setBrush(Qt.NoBrush)
+                painter.drawPolygon(poly)
+
+            # 顶点 + 编号
             for i, (vx, vy) in enumerate(self.area_points):
                 is_sel = (i == self.selected_vertex_idx)
-                painter.setPen(QPen(QColor(0, 255, 100) if is_sel else QColor(0, 180, 255), 2 / self.zoom))
-                painter.setBrush(QBrush(QColor(0, 255, 100, 200) if is_sel else QColor(0, 180, 255, 200)))
-                r = 6 / self.zoom if is_sel else 4 / self.zoom
+                c = QColor(0, 255, 180) if is_sel else QColor(0, 220, 255)
+                painter.setPen(QPen(c, 2 / self.zoom))
+                painter.setBrush(QBrush(c if is_sel else QColor(c.red(), c.green(), c.blue(), 200)))
+                r = 6 / self.zoom if is_sel else 4.5 / self.zoom
                 painter.drawEllipse(QPointF(vx, vy), r, r)
+                # 编号
+                if len(self.area_points) <= 15:
+                    painter.setPen(QPen(QColor(200, 200, 200)))
+                    painter.setFont(QFont("Arial", 8 / self.zoom))
+                    painter.drawText(QPointF(vx + 5 / self.zoom, vy - 5 / self.zoom), str(i + 1))
+            # 预览点到鼠标的虚线
+            if self.mode == MODE_DRAW_AREA and self.hover_pos and self.area_points:
+                lx, ly = self.area_points[-1]
+                hx, hy = self.hover_pos
+                painter.setPen(QPen(QColor(0, 220, 255, 100), 1 / self.zoom, Qt.DashLine))
+                painter.drawLine(QPointF(lx, ly), QPointF(hx, hy))
 
         # ─── 障碍物 ───
         for oi, obs in enumerate(self.obstacles):
@@ -542,8 +651,14 @@ class MapCanvas(QWidget):
             if self.mode == MODE_DRAW_AREA:
                 self._save_history()
                 self.area_points.append((x, y))
+                # 实时更新区域：更新 areas 中最后一个为当前点集
+                if self.areas:
+                    self.areas[-1] = list(self.area_points)
                 self.update()
                 self.status_msg.emit(f"顶点 #{len(self.area_points)}: ({x:.0f}, {y:.0f})")
+                # 实时生成路径
+                if self.scale_set and len(self.area_points) >= 3:
+                    self.generate_path()
 
             elif self.mode == MODE_DRAW_OBSTACLE:
                 self.current_drawing.append((x, y))
@@ -624,20 +739,20 @@ class MapCanvas(QWidget):
                 self.drag_start = (event.pos().x(), event.pos().y())
 
         elif event.button() == Qt.RightButton:
+            self.mouse_scene_pos = (x, y)
             if self.mode == MODE_DRAW_AREA:
-                if len(self.area_points) >= 3:
-                    self._save_history()
-                    # 完成当前区域
-                    self.areas.append(list(self.area_points))
-                    self.current_area_idx = len(self.areas) - 1
-                    self.status_msg.emit(f"区域完成: {len(self.area_points)} 顶点")
-                    if self.scale_set:
-                        self.generate_path()
-                    self.set_mode(MODE_NONE)
-                elif self.area_points:
-                    self.area_points.pop()
-                    self.status_msg.emit("至少3个点")
-                self.update()
+                menu = QMenu(self)
+                menu.setStyleSheet("QMenu{background:#333;color:#ddd;border:1px solid #555;}"
+                                   "QMenu::item{padding:6px 18px;}"
+                                   "QMenu::item:selected{background:#1a5a8a;}")
+                menu.addAction("✅ 完成区域", lambda: self._finish_area())
+                menu.addSeparator()
+                menu.addAction("➕ 插入顶点", self._insert_vertex_at)
+                menu.addAction("⬆ 弹出最后一点", self._pop_vertex)
+                menu.addSeparator()
+                menu.addAction("🗑️ 清空所有顶点", self._clear_vertices)
+                menu.addAction("🚫 取消", lambda: None)
+                menu.exec_(event.globalPos())
 
             elif self.mode == MODE_DRAW_OBSTACLE:
                 if len(self.current_drawing) >= 3:
@@ -731,13 +846,7 @@ class MapCanvas(QWidget):
                     self.generate_path()
                 self.update()
             elif self.mode == MODE_DRAW_AREA and len(self.area_points) >= 3:
-                self._save_history()
-                self.areas.append(list(self.area_points))
-                self.current_area_idx = len(self.areas) - 1
-                self.status_msg.emit(f"区域确认: {len(self.area_points)} 顶点")
-                if self.scale_set:
-                    self.generate_path()
-                self.set_mode(MODE_NONE)
+                self._finish_area()
                 self.update()
 
         elif event.key() == Qt.Key_Z and event.modifiers() & Qt.ControlModifier:

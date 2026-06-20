@@ -215,6 +215,15 @@ class RoadCanvas(QWidget):
         self.drag_start = None
         self.hover_pos = None
 
+    def set_mode(self, mode):
+        self.mode = mode
+        names = {
+            MODE_NONE: "就绪",
+            MODE_DRAW_ROAD: "画道路: 左键加点, 右键完成一段",
+            MODE_SET_SCALE: "比例尺: 点击两点, 输入实际米数",
+        }
+        self.status_msg.emit(names.get(mode, ""))
+
     def load_map(self, path):
         img = QImage(path)
         if img.isNull():

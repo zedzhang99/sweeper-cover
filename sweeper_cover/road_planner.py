@@ -194,6 +194,7 @@ class RoadCanvas(QWidget):
 
         # 比例尺
         self.scale_x = 1.0
+        self.scale_y = 1.0
         self.scale_set = False
         self.scale_start = None
 
@@ -249,7 +250,7 @@ class RoadCanvas(QWidget):
         return (px * self.scale_x, py * self.scale_y)
 
     def world_to_px(self, wx, wy):
-        return (wx / self.scale_x, wy / self.scale_x)
+        return (wx / self.scale_x, wy / self.scale_y)
 
     def _scene_pos(self, event):
         sx = (event.pos().x() - self.offset_x) / self.zoom
@@ -418,6 +419,7 @@ class RoadCanvas(QWidget):
                         f"画线 {px_dist:.0f}px\n对应实际多少米？", 50, 0.1, 10000, 2)
                     if ok and d > 0:
                         self.scale_x = d / px_dist
+                        self.scale_y = d / px_dist
                         self.scale_set = True
                         self.status_msg.emit(f"比例尺: 1px = {self.scale_x:.4f}m ({d}m/{px_dist:.0f}px)")
                     self.scale_start = None

@@ -11,7 +11,7 @@ os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QDoubleSpinBox, QSpinBox, QGroupBox,
-    QFormLayout, QStatusBar, QFileDialog, QMessageBox, QSplitter,
+    QFormLayout, QStatusBar, QFileDialog, QMessageBox, QSplitter, QInputDialog,
 )
 from PyQt5.QtCore import Qt, QPointF, QRectF, pyqtSignal
 from PyQt5.QtGui import (
